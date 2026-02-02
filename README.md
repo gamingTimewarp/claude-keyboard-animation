@@ -1,3 +1,5 @@
+Disclaimer: This content was generated with assistance from Anthropic's Sonnet 4.5 Claude model.  
+
 # Video to QMK RGB Animation Converter
 
 Convert video files into RGB LED animations for QMK-powered keyboards!
