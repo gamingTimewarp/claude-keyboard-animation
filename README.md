@@ -1,4 +1,4 @@
-Disclaimer: This content was generated with assistance from Anthropic's Sonnet 4.5 Claude model.  
+Disclaimer: This content was generated with assistance from Anthropic's Sonnet 4.5 Claude model.
 
 # Video to QMK RGB Animation Converter
 
@@ -26,6 +26,7 @@ python video_to_qmk.py input.mp4 -w WIDTH -y HEIGHT
 - `-f, --fps` - Target frames per second (default: 10)
 - `--skip` - Use every Nth frame (default: 1, no skip)
 - `--max-frames` - Maximum frames to extract (default: all)
+- `--led-map` - Path to custom LED mapping file (see [Custom LED Mapping](#custom-led-mapping))
 
 ### Examples
 
@@ -149,7 +150,11 @@ LED 0,  LED 1,  LED 2,  ... LED (width-1)
 LED width, LED width+1, ...
 ```
 
-If your keyboard has a different layout, you'll need to modify the LED index calculation in the `video_animation_update()` function:
+If your keyboard has a different layout, you have two options:
+
+1. **Use `--led-map`** (recommended): Create a mapping file and use the `--led-map` option. See [Custom LED Mapping](#custom-led-mapping).
+
+2. **Modify the generated code**: Change the LED index calculation in the `video_animation_update()` function:
 
 ```c
 // Change this line:
@@ -160,21 +165,29 @@ uint8_t led_index = y * VIDEO_WIDTH + x;
 uint8_t led_index = x * VIDEO_HEIGHT + y;
 ```
 
-## Advanced: Custom LED Mapping
+## Custom LED Mapping
 
-For keyboards with non-rectangular layouts or custom LED orders, create a mapping array:
+For keyboards with non-rectangular layouts or custom LED orders, use the `--led-map` option with a mapping file.
 
-```c
-// Define your custom LED positions
-static const uint8_t PROGMEM led_map[VIDEO_HEIGHT][VIDEO_WIDTH] = {
-    {0, 1, 2, 3, 4, 5},
-    {6, 7, 8, 9, 10, 11},
-    // ... etc
-};
+### File Format
 
-// Then use it:
-uint8_t led_index = pgm_read_byte(&led_map[y][x]);
+Create a text file with one row per line, using comma-separated LED indices. Use `255` to mark gaps (positions with no LED). Lines starting with `#` are treated as comments.
+
+Example (`sample_RGB_layout.txt` included in repo):
 ```
+# Keychron V6 Max ISO LED mapping
+0,1,2,3,4,5,6,7,8,9,10,11,12,255,13,14,15,16,17,18,19
+20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40
+...
+```
+
+### Usage
+
+```bash
+python video_to_qmk.py badapple.mp4 -w 21 -y 6 --led-map sample_RGB_layout.txt
+```
+
+The script validates that the mapping dimensions match your specified width and height, and automatically generates code that uses `pgm_read_byte()` to read LED indices from flash memory.
 
 ## Troubleshooting
 
