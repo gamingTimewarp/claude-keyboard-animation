@@ -47,13 +47,9 @@ def load_led_map(led_map_file, width, height):
 
 
 def rle_compress_frame(frame):
-    """
-    Run-Length Encode a frame.
-    Returns list of (count, r, g, b) tuples.
-    Each pixel is encoded as: run_length, red, green, blue
-    """
+    """Run-Length Encode a frame."""
     height, width, _ = frame.shape
-    pixels = frame.reshape(-1, 3)  # Flatten to list of RGB pixels
+    pixels = frame.reshape(-1, 3)
     
     compressed = []
     if len(pixels) == 0:
@@ -64,16 +60,14 @@ def rle_compress_frame(frame):
     
     for pixel in pixels[1:]:
         pixel_tuple = tuple(pixel)
-        if pixel_tuple == current_color and count < 255:  # Max run length 255 (fits in uint8_t)
+        if pixel_tuple == current_color and count < 255:
             count += 1
         else:
             compressed.append((count, *current_color))
             current_color = pixel_tuple
             count = 1
     
-    # Don't forget the last run
     compressed.append((count, *current_color))
-    
     return compressed
 
 
@@ -84,7 +78,6 @@ def calculate_compression_stats(frames, width, height):
     compressed_sizes = []
     for frame in frames:
         rle_data = rle_compress_frame(frame)
-        # Each RLE entry is: 1 byte (count) + 3 bytes (RGB) = 4 bytes
         compressed_sizes.append(len(rle_data) * 4)
     
     total_compressed = sum(compressed_sizes)
@@ -136,9 +129,106 @@ def extract_and_resize_frames(video_path, width, height, max_frames=None, frame_
     return frames
 
 
-def generate_qmk_code_uncompressed(f, frames, fps, keyboard_width, keyboard_height, led_map):
-    """Generate uncompressed QMK code."""
-    # Frame data
+def generate_qmk_code(frames, output_path, fps, keyboard_width, keyboard_height, led_map=None, use_compression=False):
+    """Generate QMK C code for the animation."""
+    with open(output_path, 'w') as f:
+        # Header
+        f.write("// Generated video animation for QMK RGB Matrix\n")
+        f.write(f"// Total frames: {len(frames)}\n")
+        f.write(f"// Target FPS: {fps}\n")
+        f.write(f"// Dimensions: {keyboard_width}x{keyboard_height}\n")
+        
+        if use_compression:
+            stats = calculate_compression_stats(frames, keyboard_width, keyboard_height)
+            f.write(f"// Compression: RLE (Run-Length Encoding)\n")
+            f.write(f"// Uncompressed size: {stats['uncompressed']} bytes\n")
+            f.write(f"// Compressed size: {stats['compressed']} bytes\n")
+            f.write(f"// Compression ratio: {stats['ratio']:.2f}x\n")
+            f.write(f"// Space saved: {stats['savings_percent']:.1f}%\n")
+        else:
+            total_size = len(frames) * keyboard_width * keyboard_height * 3
+            f.write(f"// Compression: None\n")
+            f.write(f"// Total size: {total_size} bytes\n")
+        
+        f.write("\n")
+        f.write("#include QMK_KEYBOARD_H\n")
+        f.write("#include \"rgb_matrix.h\"\n\n")
+        
+        # Define constants
+        f.write(f"#define VIDEO_FRAME_COUNT {len(frames)}\n")
+        f.write(f"#define VIDEO_WIDTH {keyboard_width}\n")
+        f.write(f"#define VIDEO_HEIGHT {keyboard_height}\n")
+        f.write(f"#define VIDEO_FPS {fps}\n")
+        f.write(f"#define FRAME_DELAY_MS {int(1000/fps)}\n\n")
+        
+        # Add LED mapping if provided
+        if led_map:
+            f.write("// LED mapping array\n")
+            f.write("static const uint8_t PROGMEM led_map[VIDEO_HEIGHT][VIDEO_WIDTH] = {\n")
+            for y, row in enumerate(led_map):
+                f.write("    {")
+                for x, led_idx in enumerate(row):
+                    f.write(f"{led_idx:3d}")
+                    if x < len(row) - 1:
+                        f.write(",")
+                f.write("}")
+                if y < len(led_map) - 1:
+                    f.write(",")
+                f.write("\n")
+            f.write("};\n\n")
+        
+        # Generate frame data
+        if use_compression:
+            write_compressed_data(f, frames, keyboard_width, keyboard_height)
+        else:
+            write_uncompressed_data(f, frames, keyboard_width, keyboard_height)
+        
+        # Animation state - MUST be declared here, before functions
+        f.write("""// Animation state
+static uint16_t current_frame = 0;
+static uint32_t last_frame_time = 0;
+static bool animation_playing = false;
+
+""")
+        
+        # Write functions
+        if use_compression:
+            write_compressed_functions(f, led_map)
+        else:
+            write_uncompressed_functions(f, led_map)
+        
+        # Common control functions
+        f.write("""// Start the animation
+void video_animation_start(void) {
+    current_frame = 0;
+    last_frame_time = timer_read32();
+    animation_playing = true;
+    
+    rgb_matrix_mode_noeeprom(RGB_MATRIX_SOLID_COLOR);
+    rgb_matrix_sethsv_noeeprom(0, 0, 0);
+}
+
+// Stop the animation
+void video_animation_stop(void) {
+    animation_playing = false;
+    rgb_matrix_mode_noeeprom(RGB_MATRIX_CYCLE_ALL);
+}
+
+// Toggle animation on/off
+void video_animation_toggle(void) {
+    if (animation_playing) {
+        video_animation_stop();
+    } else {
+        video_animation_start();
+    }
+}
+""")
+    
+    print(f"\nGenerated QMK code: {output_path}")
+
+
+def write_uncompressed_data(f, frames, width, height):
+    """Write uncompressed frame data."""
     f.write("// Frame data stored as RGB888 (uncompressed)\n")
     f.write("static const uint8_t PROGMEM video_frames[VIDEO_FRAME_COUNT][VIDEO_HEIGHT][VIDEO_WIDTH][3] = {\n")
     
@@ -146,15 +236,15 @@ def generate_qmk_code_uncompressed(f, frames, fps, keyboard_width, keyboard_heig
         f.write(f"    // Frame {frame_idx}\n")
         f.write("    {\n")
         
-        for y in range(keyboard_height):
+        for y in range(height):
             f.write("        {")
-            for x in range(keyboard_width):
+            for x in range(width):
                 r, g, b = frame[y, x]
                 f.write(f"{{{r},{g},{b}}}")
-                if x < keyboard_width - 1:
+                if x < width - 1:
                     f.write(",")
             f.write("}")
-            if y < keyboard_height - 1:
+            if y < height - 1:
                 f.write(",")
             f.write("\n")
         
@@ -164,13 +254,10 @@ def generate_qmk_code_uncompressed(f, frames, fps, keyboard_width, keyboard_heig
         f.write("\n")
     
     f.write("};\n\n")
-    
-    # Generate update function
-    generate_update_function_uncompressed(f, led_map)
 
 
-def generate_qmk_code_compressed(f, frames, fps, keyboard_width, keyboard_height, led_map):
-    """Generate RLE compressed QMK code."""
+def write_compressed_data(f, frames, width, height):
+    """Write RLE compressed frame data."""
     # Compress all frames
     compressed_frames = []
     frame_offsets = [0]
@@ -187,8 +274,8 @@ def generate_qmk_code_compressed(f, frames, fps, keyboard_width, keyboard_height
     print()
     
     # Write frame offsets
-    f.write("// Frame offsets in RLE data\n")
-    f.write(f"static const uint16_t PROGMEM frame_offsets[VIDEO_FRAME_COUNT + 1] = {{\n    ")
+    f.write("// Frame offsets in RLE data (uint32_t for large animations)\n")
+    f.write(f"static const uint32_t PROGMEM frame_offsets[VIDEO_FRAME_COUNT + 1] = {{\n    ")
     for i, offset in enumerate(frame_offsets):
         f.write(f"{offset}")
         if i < len(frame_offsets) - 1:
@@ -215,13 +302,10 @@ def generate_qmk_code_compressed(f, frames, fps, keyboard_width, keyboard_height
             if entry_count % 8 == 0:
                 f.write("\n    ")
     f.write("\n};\n\n")
-    
-    # Generate update function
-    generate_update_function_compressed(f, led_map)
 
 
-def generate_update_function_uncompressed(f, led_map):
-    """Generate uncompressed update function."""
+def write_uncompressed_functions(f, led_map):
+    """Write uncompressed update function."""
     if led_map:
         f.write("""// Update function - call this in rgb_matrix_indicators_advanced_user()
 bool video_animation_update(uint8_t led_min, uint8_t led_max) {
@@ -255,6 +339,7 @@ bool video_animation_update(uint8_t led_min, uint8_t led_max) {
     
     return true;
 }
+
 """)
     else:
         f.write("""// Update function - call this in rgb_matrix_indicators_advanced_user()
@@ -288,19 +373,20 @@ bool video_animation_update(uint8_t led_min, uint8_t led_max) {
     
     return true;
 }
+
 """)
 
 
-def generate_update_function_compressed(f, led_map):
-    """Generate RLE decompression update function."""
+def write_compressed_functions(f, led_map):
+    """Write RLE decompression functions."""
     f.write("""// Decode and display RLE compressed frame
-void decode_and_display_frame(uint16_t frame_idx, uint8_t led_min, uint8_t led_max) {
-    uint16_t start_offset = pgm_read_word(&frame_offsets[frame_idx]);
-    uint16_t end_offset = pgm_read_word(&frame_offsets[frame_idx + 1]);
+static void decode_and_display_frame(uint16_t frame_idx, uint8_t led_min, uint8_t led_max) {
+    uint32_t start_offset = pgm_read_dword(&frame_offsets[frame_idx]);
+    uint32_t end_offset = pgm_read_dword(&frame_offsets[frame_idx + 1]);
     
     uint16_t pixel_idx = 0;
     
-    for (uint16_t offset = start_offset; offset < end_offset; offset++) {
+    for (uint32_t offset = start_offset; offset < end_offset; offset++) {
         // Read RLE entry: count, r, g, b
         uint8_t count = pgm_read_byte(&rle_data[offset * 4]);
         uint8_t r = pgm_read_byte(&rle_data[offset * 4 + 1]);
@@ -354,101 +440,8 @@ bool video_animation_update(uint8_t led_min, uint8_t led_max) {
     
     return true;
 }
-""")
-
-
-def generate_qmk_code(frames, output_path, fps, keyboard_width, keyboard_height, led_map=None, use_compression=False):
-    """Generate QMK C code for the animation."""
-    with open(output_path, 'w') as f:
-        # Header
-        f.write("// Generated video animation for QMK RGB Matrix\n")
-        f.write(f"// Total frames: {len(frames)}\n")
-        f.write(f"// Target FPS: {fps}\n")
-        f.write(f"// Dimensions: {keyboard_width}x{keyboard_height}\n")
-        
-        if use_compression:
-            stats = calculate_compression_stats(frames, keyboard_width, keyboard_height)
-            f.write(f"// Compression: RLE (Run-Length Encoding)\n")
-            f.write(f"// Uncompressed size: {stats['uncompressed']} bytes\n")
-            f.write(f"// Compressed size: {stats['compressed']} bytes\n")
-            f.write(f"// Compression ratio: {stats['ratio']:.2f}x\n")
-            f.write(f"// Space saved: {stats['savings_percent']:.1f}%\n")
-        else:
-            total_size = len(frames) * keyboard_width * keyboard_height * 3
-            f.write(f"// Compression: None\n")
-            f.write(f"// Total size: {total_size} bytes\n")
-        
-        f.write("\n")
-        f.write("#include QMK_KEYBOARD_H\n")
-        f.write("#include \"rgb_matrix.h\"\n\n")
-        
-        # Define constants
-        f.write(f"#define VIDEO_FRAME_COUNT {len(frames)}\n")
-        f.write(f"#define VIDEO_WIDTH {keyboard_width}\n")
-        f.write(f"#define VIDEO_HEIGHT {keyboard_height}\n")
-        f.write(f"#define VIDEO_FPS {fps}\n")
-        f.write(f"#define FRAME_DELAY_MS {int(1000/fps)}\n\n")
-        
-        # Add LED mapping if provided
-        if led_map:
-            f.write("// LED mapping array\n")
-            f.write("static const uint8_t PROGMEM led_map[VIDEO_HEIGHT][VIDEO_WIDTH] = {\n")
-            for y, row in enumerate(led_map):
-                f.write("    {")
-                for x, led_idx in enumerate(row):
-                    f.write(f"{led_idx:3d}")
-                    if x < len(row) - 1:
-                        f.write(",")
-                f.write("}")
-                if y < len(led_map) - 1:
-                    f.write(",")
-                f.write("\n")
-            f.write("};\n\n")
-        
-        # Generate frame data based on compression
-        if use_compression:
-            generate_qmk_code_compressed(f, frames, fps, keyboard_width, keyboard_height, led_map)
-        else:
-            generate_qmk_code_uncompressed(f, frames, fps, keyboard_width, keyboard_height, led_map)
-        
-        # Common animation control code
-        f.write("""// Animation state
-static uint16_t current_frame = 0;
-static uint32_t last_frame_time = 0;
-static bool animation_playing = false;
-
-// Start the animation
-void video_animation_start(void) {
-    current_frame = 0;
-    last_frame_time = timer_read32();
-    animation_playing = true;
-    
-    rgb_matrix_mode_noeeprom(RGB_MATRIX_SOLID_COLOR);
-    rgb_matrix_sethsv_noeeprom(0, 0, 0);
-}
-
-// Stop the animation
-void video_animation_stop(void) {
-    animation_playing = false;
-    rgb_matrix_mode_noeeprom(RGB_MATRIX_CYCLE_ALL);
-}
-
-// Toggle animation on/off
-void video_animation_toggle(void) {
-    if (animation_playing) {
-        video_animation_stop();
-    } else {
-        video_animation_start();
-    }
-}
 
 """)
-        
-        # Add usage examples
-        f.write("""// Example usage in keymap.c - see README for full integration guide
-""")
-    
-    print(f"\nGenerated QMK code: {output_path}")
 
 
 def main():
@@ -527,7 +520,6 @@ Examples:
     print(f"  Estimated uncompressed size: ~{estimated_size_kb:.1f} KB")
     
     if args.compress:
-        # Rough estimate: RLE typically achieves 2-4x compression on video
         estimated_compressed = estimated_size_kb / 2.5
         print(f"  Estimated compressed size: ~{estimated_compressed:.1f} KB (rough estimate)")
     
