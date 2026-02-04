@@ -58,6 +58,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download Linux artifact
         uses: actions/download-artifact@v4
         with:
@@ -76,3 +78,4 @@ jobs:
           files: |
             linux/video_to_qmk
             windows/video_to_qmk.exe
+            README.md

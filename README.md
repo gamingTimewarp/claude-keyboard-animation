@@ -4,61 +4,43 @@ Convert video files into highly compressed RGB LED animations for QMK-powered ke
 
 **Generated with assistance from Anthropic's Claude Sonnet 4.5**
 
-## Quick Start
+## Installation
+
+### Option 1: Download Prebuilt Binary (Recommended)
+
+Download the latest release for your platform from the [Releases page](https://github.com/gamingTimewarp/claude-keyboard-animation/releases):
+
+| Platform | File |
+|----------|------|
+| Windows | `video_to_qmk.exe` |
+| Linux | `video_to_qmk` |
+
+On Linux, make it executable: `chmod +x video_to_qmk`
+
+### Option 2: Run from Source
 
 ```bash
-# Install dependencies
+git clone https://github.com/gamingTimewarp/claude-keyboard-animation.git
+cd claude-keyboard-animation
 pip install opencv-python numpy
-
-# Basic usage (uncompressed RGB)
-python video_to_qmk.py badapple.mp4 -w 21 -y 6 -f 10 --max-frames 100
-
-# With color RLE compression (2-4x smaller)
-python video_to_qmk.py video.mp4 -w 21 -y 6 --mode rgb-rle --max-frames 200
-
-# Black & white with extreme compression (50-100x smaller!)
-python video_to_qmk.py badapple.mp4 -w 21 -y 6 --mode mono-rle --max-frames 1000
+python video_to_qmk.py --help
 ```
 
 ---
 
-## Prebuilt Binaries
-
-Standalone executables are available for Windows and Linux—no Python installation required.
-
-### Download
-
-Download the latest release from the [Releases page](https://github.com/awright/video-to-qmk/releases):
-
-- **Windows:** `video_to_qmk.exe`
-- **Linux:** `video_to_qmk`
-
-### Usage
-
-The binaries work exactly like the Python script:
+## Quick Start
 
 ```bash
-# Windows
-video_to_qmk.exe badapple.mp4 -w 21 -y 6 -f 10 --max-frames 100
-
-# Linux
+# Using prebuilt binary (or replace with "python video_to_qmk.py" for source)
 ./video_to_qmk badapple.mp4 -w 21 -y 6 -f 10 --max-frames 100
-```
 
-On Linux, you may need to make the binary executable first:
-```bash
-chmod +x video_to_qmk
-```
+# With color RLE compression (2-4x smaller)
+./video_to_qmk video.mp4 -w 21 -y 6 --mode rgb-rle --max-frames 200
 
-### GUI Mode
+# Black & white with extreme compression (50-100x smaller!)
+./video_to_qmk badapple.mp4 -w 21 -y 6 --mode mono-rle --max-frames 1000
 
-Running the executable without any arguments launches a graphical interface:
-
-```bash
-# Windows - double-click video_to_qmk.exe or run:
-video_to_qmk.exe
-
-# Linux
+# GUI mode - run without arguments
 ./video_to_qmk
 ```
 
