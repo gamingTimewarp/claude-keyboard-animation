@@ -1,1 +1,6 @@
 badapple.mp4
+keychron_v6_max_iso.txt
+build/
+dist/
+*.spec
+__pycache__/
