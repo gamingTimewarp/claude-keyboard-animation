@@ -47,7 +47,7 @@ def load_led_map(led_map_file, width, height):
     return led_map
 
 
-def convert_to_monochrome(frame, threshold=128, colors=None, dither=False):
+def convert_to_monochrome(frame, threshold=128, colors=None, dither=False, auto_threshold=False, adaptive_threshold=False):
     """
     Convert frame to pure black and white (1-bit per pixel).
     
@@ -56,6 +56,8 @@ def convert_to_monochrome(frame, threshold=128, colors=None, dither=False):
         threshold: B&W threshold (0-255)
         colors: Reduce to N colors first (None to skip)
         dither: Apply dithering for smoother gradients
+        auto_threshold: Use Otsu's method to find optimal threshold
+        adaptive_threshold: Adjust threshold based on frame brightness (dynamic)
     
     Returns array of booleans: True = white, False = black
     """
@@ -68,8 +70,29 @@ def convert_to_monochrome(frame, threshold=128, colors=None, dither=False):
         quantized = palette[labels.flatten()].reshape(frame.shape).astype(np.uint8)
         gray = cv2.cvtColor(quantized, cv2.COLOR_RGB2GRAY)
     else:
-        # Convert to grayscale
+        # Convert to grayscale using proper luminance formula
         gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+    
+    # Adaptive threshold: adjust based on frame brightness
+    if adaptive_threshold:
+        mean_brightness = np.mean(gray)
+        # When frame is mostly bright, use higher threshold (more selective about white)
+        # When frame is mostly dark, use lower threshold (more generous with white)
+        # This creates a dynamic threshold that adapts to the content
+        if mean_brightness > 160:
+            threshold = 180  # Bright frame - be strict about white
+        elif mean_brightness > 120:
+            threshold = 150
+        elif mean_brightness > 80:
+            threshold = 128  # Medium frame - use middle
+        elif mean_brightness > 40:
+            threshold = 100
+        else:
+            threshold = 80   # Dark frame - be generous with white
+    # Auto threshold using Otsu's method (finds optimal threshold)
+    elif auto_threshold:
+        threshold, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        threshold = int(threshold)
     
     # Optional: Apply dithering
     if dither:
@@ -151,7 +174,7 @@ def rle_compress_monochrome(mono_frame):
     return compressed
 
 
-def calculate_compression_stats(frames, width, height, mode, threshold=128, colors=None, dither=False):
+def calculate_compression_stats(frames, width, height, mode, threshold=128, colors=None, dither=False, auto_threshold=False, adaptive_threshold=False):
     """Calculate compression statistics."""
     uncompressed_size = len(frames) * width * height * 3  # RGB888
     
@@ -162,7 +185,7 @@ def calculate_compression_stats(frames, width, height, mode, threshold=128, colo
         # RLE: 2 bytes per run (count + is_white flag)
         compressed_size = 0
         for frame in frames:
-            mono = convert_to_monochrome(frame, threshold, colors, dither)
+            mono = convert_to_monochrome(frame, threshold, colors, dither, auto_threshold, adaptive_threshold)
             rle_data = rle_compress_monochrome(mono)
             compressed_size += len(rle_data) * 2
     else:  # normal RLE
@@ -184,12 +207,21 @@ def calculate_compression_stats(frames, width, height, mode, threshold=128, colo
     }
 
 
-def extract_and_resize_frames(video_path, width, height, max_frames=None, frame_skip=1, skip_pattern=None):
+def extract_and_resize_frames(video_path, width, height, max_frames=None, frame_skip=1, skip_pattern=None, interp_method='nearest', bw_first=False, threshold=128):
     """Extract frames from video and resize to keyboard dimensions."""
     cap = cv2.VideoCapture(video_path)
     frames = []
     frame_idx = 0
     extracted = 0
+    
+    # Map interpolation method
+    interp_map = {
+        'nearest': cv2.INTER_NEAREST,  # No blending - preserves hard edges
+        'area': cv2.INTER_AREA,        # Smooth downscaling - better for photos
+        'linear': cv2.INTER_LINEAR,    # Bilinear interpolation
+        'cubic': cv2.INTER_CUBIC       # Bicubic interpolation - smoothest
+    }
+    interp = interp_map.get(interp_method, cv2.INTER_NEAREST)
     
     # Parse skip pattern if provided
     pattern = None
@@ -234,8 +266,19 @@ def extract_and_resize_frames(video_path, width, height, max_frames=None, frame_
             should_extract = True
         
         if should_extract:
-            resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
-            rgb_frame = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+            if bw_first:
+                # Convert to B&W BEFORE resizing to avoid gray averaging
+                # This is best for pure B&W source videos
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                _, bw = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+                # Now resize the pure B&W image
+                resized_bw = cv2.resize(bw, (width, height), interpolation=interp)
+                # Convert back to RGB (all channels same)
+                rgb_frame = cv2.cvtColor(resized_bw, cv2.COLOR_GRAY2RGB)
+            else:
+                # Resize with selected interpolation method
+                resized = cv2.resize(frame, (width, height), interpolation=interp)
+                rgb_frame = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
             
             frames.append(rgb_frame)
             extracted += 1
@@ -255,7 +298,7 @@ def extract_and_resize_frames(video_path, width, height, max_frames=None, frame_
 
 def generate_qmk_code(frames, output_path, fps, keyboard_width, keyboard_height, 
                      led_map=None, mode='bitpack', threshold=128, white_color=(255,255,255),
-                     colors=None, dither=False):
+                     colors=None, dither=False, auto_threshold=False, adaptive_threshold=False):
     """
     Generate QMK C code for monochrome animation.
     
@@ -309,9 +352,9 @@ def generate_qmk_code(frames, output_path, fps, keyboard_width, keyboard_height,
         
         # Generate frame data based on mode
         if mode == 'bitpack':
-            write_bitpacked_data(f, frames, keyboard_width, keyboard_height, threshold, colors, dither)
+            write_bitpacked_data(f, frames, keyboard_width, keyboard_height, threshold, colors, dither, auto_threshold, adaptive_threshold)
         elif mode == 'rle':
-            write_rle_monochrome_data(f, frames, keyboard_width, keyboard_height, threshold, colors, dither)
+            write_rle_monochrome_data(f, frames, keyboard_width, keyboard_height, threshold, colors, dither, auto_threshold, adaptive_threshold)
         
         # Animation state - MUST be declared here, before functions
         f.write("""// Animation state
@@ -358,7 +401,7 @@ void video_animation_toggle(void) {
     print(f"Mode: {mode}, Compression: {stats['ratio']:.1f}x")
 
 
-def write_bitpacked_data(f, frames, width, height, threshold, colors=None, dither=False):
+def write_bitpacked_data(f, frames, width, height, threshold, colors=None, dither=False, auto_threshold=False, adaptive_threshold=False):
     """Write bit-packed monochrome data."""
     print("Converting to monochrome and bit-packing...")
     
@@ -369,7 +412,7 @@ def write_bitpacked_data(f, frames, width, height, threshold, colors=None, dithe
     f.write(f"static const uint8_t PROGMEM mono_frames[VIDEO_FRAME_COUNT][{bytes_per_frame}] = {{\n")
     
     for frame_idx, frame in enumerate(frames):
-        mono = convert_to_monochrome(frame, threshold, colors, dither)
+        mono = convert_to_monochrome(frame, threshold, colors, dither, auto_threshold, adaptive_threshold)
         packed = pack_bits(mono)
         
         f.write(f"    // Frame {frame_idx}\n    {{")
@@ -467,7 +510,7 @@ bool video_animation_update(uint8_t led_min, uint8_t led_max) {
 """)
 
 
-def write_rle_monochrome_data(f, frames, width, height, threshold, colors=None, dither=False):
+def write_rle_monochrome_data(f, frames, width, height, threshold, colors=None, dither=False, auto_threshold=False, adaptive_threshold=False):
     """Write RLE monochrome data."""
     print("Converting to monochrome and RLE compressing...")
     
@@ -476,7 +519,7 @@ def write_rle_monochrome_data(f, frames, width, height, threshold, colors=None, 
     total_runs = 0
     
     for i, frame in enumerate(frames):
-        mono = convert_to_monochrome(frame, threshold, colors, dither)
+        mono = convert_to_monochrome(frame, threshold, colors, dither, auto_threshold, adaptive_threshold)
         rle_data = rle_compress_monochrome(mono)
         compressed_frames.append(rle_data)
         total_runs += len(rle_data)
@@ -623,8 +666,16 @@ Examples:
     parser.add_argument('--led-map', type=str, default=None, help='LED mapping file')
     parser.add_argument('--mode', choices=['bitpack', 'rle'], default='rle',
                         help='Compression mode (rle recommended for Bad Apple)')
+    parser.add_argument('--interp', choices=['nearest', 'area', 'linear', 'cubic'], default='nearest',
+                        help='Resize interpolation: nearest (sharp, no blend), area (smooth), linear, cubic (default: nearest for B&W)')
+    parser.add_argument('--bw-first', action='store_true',
+                        help='Convert to B&W BEFORE resizing (best for pure B&W source videos)')
     parser.add_argument('--threshold', type=int, default=128,
                         help='B&W threshold 0-255 (default: 128)')
+    parser.add_argument('--auto-threshold', action='store_true',
+                        help='Automatically find optimal threshold using Otsu method')
+    parser.add_argument('--adaptive-threshold', action='store_true',
+                        help='Dynamic threshold: high for bright frames, low for dark frames (recommended!)')
     parser.add_argument('--white', type=str, default='255,255,255',
                         help='White color as R,G,B (default: 255,255,255)')
     parser.add_argument('--colors', type=int, default=None,
@@ -670,12 +721,15 @@ Examples:
         args.height,
         max_frames=args.max_frames,
         frame_skip=args.skip,
-        skip_pattern=args.skip_pattern
+        skip_pattern=args.skip_pattern,
+        interp_method=args.interp,
+        bw_first=args.bw_first,
+        threshold=args.threshold
     )
     
     # Show compression preview
     stats = calculate_compression_stats(frames, args.width, args.height, args.mode, 
-                                       args.threshold, args.colors, args.dither)
+                                       args.threshold, args.colors, args.dither, args.auto_threshold, args.adaptive_threshold)
     print(f"\nCompression preview:")
     print(f"  Mode: {args.mode}")
     print(f"  Uncompressed: {stats['uncompressed']/1024:.1f} KB")
@@ -686,7 +740,7 @@ Examples:
     # Generate
     generate_qmk_code(frames, args.output, args.fps, args.width, args.height, 
                      led_map, args.mode, args.threshold, white_color,
-                     args.colors, args.dither)
+                     args.colors, args.dither, args.auto_threshold, args.adaptive_threshold)
     
     print("\n✓ Conversion complete!")
     print(f"\nWith {stats['ratio']:.1f}x compression, you could fit {int(stats['ratio'])} times")
