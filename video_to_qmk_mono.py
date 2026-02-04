@@ -47,16 +47,57 @@ def load_led_map(led_map_file, width, height):
     return led_map
 
 
-def convert_to_monochrome(frame, threshold=128):
+def convert_to_monochrome(frame, threshold=128, colors=None, dither=False):
     """
     Convert frame to pure black and white (1-bit per pixel).
+    
+    Args:
+        frame: RGB frame
+        threshold: B&W threshold (0-255)
+        colors: Reduce to N colors first (None to skip)
+        dither: Apply dithering for smoother gradients
+    
     Returns array of booleans: True = white, False = black
     """
-    # Convert to grayscale
-    gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+    # Optional: Reduce color palette first
+    if colors and colors >= 2 and colors <= 16:
+        # Quantize colors using k-means clustering
+        pixels = frame.reshape(-1, 3).astype(np.float32)
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        _, labels, palette = cv2.kmeans(pixels, colors, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+        quantized = palette[labels.flatten()].reshape(frame.shape).astype(np.uint8)
+        gray = cv2.cvtColor(quantized, cv2.COLOR_RGB2GRAY)
+    else:
+        # Convert to grayscale
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
     
-    # Threshold to pure black/white
-    return gray > threshold
+    # Optional: Apply dithering
+    if dither:
+        # Floyd-Steinberg dithering
+        height, width = gray.shape
+        gray_float = gray.astype(np.float32)
+        
+        for y in range(height):
+            for x in range(width):
+                old_pixel = gray_float[y, x]
+                new_pixel = 255 if old_pixel > threshold else 0
+                gray_float[y, x] = new_pixel
+                error = old_pixel - new_pixel
+                
+                # Distribute error to neighbors
+                if x + 1 < width:
+                    gray_float[y, x + 1] += error * 7/16
+                if y + 1 < height:
+                    if x > 0:
+                        gray_float[y + 1, x - 1] += error * 3/16
+                    gray_float[y + 1, x] += error * 5/16
+                    if x + 1 < width:
+                        gray_float[y + 1, x + 1] += error * 1/16
+        
+        return gray_float > threshold
+    else:
+        # Simple threshold
+        return gray > threshold
 
 
 def pack_bits(mono_frame):
@@ -110,7 +151,7 @@ def rle_compress_monochrome(mono_frame):
     return compressed
 
 
-def calculate_compression_stats(frames, width, height, mode):
+def calculate_compression_stats(frames, width, height, mode, threshold=128, colors=None, dither=False):
     """Calculate compression statistics."""
     uncompressed_size = len(frames) * width * height * 3  # RGB888
     
@@ -121,7 +162,7 @@ def calculate_compression_stats(frames, width, height, mode):
         # RLE: 2 bytes per run (count + is_white flag)
         compressed_size = 0
         for frame in frames:
-            mono = convert_to_monochrome(frame)
+            mono = convert_to_monochrome(frame, threshold, colors, dither)
             rle_data = rle_compress_monochrome(mono)
             compressed_size += len(rle_data) * 2
     else:  # normal RLE
@@ -143,12 +184,27 @@ def calculate_compression_stats(frames, width, height, mode):
     }
 
 
-def extract_and_resize_frames(video_path, width, height, max_frames=None, frame_skip=1):
+def extract_and_resize_frames(video_path, width, height, max_frames=None, frame_skip=1, skip_pattern=None):
     """Extract frames from video and resize to keyboard dimensions."""
     cap = cv2.VideoCapture(video_path)
     frames = []
     frame_idx = 0
     extracted = 0
+    
+    # Parse skip pattern if provided
+    pattern = None
+    pattern_idx = 0
+    frames_until_next = 0
+    if skip_pattern:
+        try:
+            pattern = [int(x.strip()) for x in skip_pattern.split(',')]
+            if not pattern or any(x < 1 for x in pattern):
+                raise ValueError()
+            print(f"Using skip pattern: {pattern}")
+            frames_until_next = pattern[0]  # Start with first value in pattern
+        except:
+            print(f"Warning: Invalid skip pattern '{skip_pattern}', using uniform skip")
+            pattern = None
     
     print(f"Extracting and resizing frames to {width}x{height}...")
     
@@ -157,23 +213,40 @@ def extract_and_resize_frames(video_path, width, height, max_frames=None, frame_
         if not ret:
             break
         
-        if frame_idx % frame_skip != 0:
-            frame_idx += 1
-            continue
+        # Determine if we should extract this frame
+        should_extract = False
         
-        resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
-        rgb_frame = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        if pattern:
+            # Skip pattern: extract frame, then skip N frames based on pattern
+            if frames_until_next == 0:
+                should_extract = True
+                # Move to next value in pattern
+                pattern_idx = (pattern_idx + 1) % len(pattern)
+                frames_until_next = pattern[pattern_idx]
+            else:
+                frames_until_next -= 1
+        elif frame_skip > 1:
+            # Uniform skip
+            if frame_idx % frame_skip == 0:
+                should_extract = True
+        else:
+            # No skip, extract all frames
+            should_extract = True
         
-        frames.append(rgb_frame)
-        extracted += 1
-        
-        if max_frames and extracted >= max_frames:
-            break
+        if should_extract:
+            resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+            rgb_frame = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+            
+            frames.append(rgb_frame)
+            extracted += 1
+            
+            if max_frames and extracted >= max_frames:
+                break
+            
+            if extracted % 10 == 0:
+                print(f"  Extracted {extracted} frames...", end='\r')
         
         frame_idx += 1
-        
-        if extracted % 10 == 0:
-            print(f"  Extracted {extracted} frames...", end='\r')
     
     cap.release()
     print(f"\nExtracted {len(frames)} frames total")
@@ -181,7 +254,8 @@ def extract_and_resize_frames(video_path, width, height, max_frames=None, frame_
 
 
 def generate_qmk_code(frames, output_path, fps, keyboard_width, keyboard_height, 
-                     led_map=None, mode='bitpack', threshold=128, white_color=(255,255,255)):
+                     led_map=None, mode='bitpack', threshold=128, white_color=(255,255,255),
+                     colors=None, dither=False):
     """
     Generate QMK C code for monochrome animation.
     
@@ -234,9 +308,9 @@ def generate_qmk_code(frames, output_path, fps, keyboard_width, keyboard_height,
         
         # Generate frame data based on mode
         if mode == 'bitpack':
-            write_bitpacked_data(f, frames, keyboard_width, keyboard_height, threshold)
+            write_bitpacked_data(f, frames, keyboard_width, keyboard_height, threshold, colors, dither)
         elif mode == 'rle':
-            write_rle_monochrome_data(f, frames, keyboard_width, keyboard_height, threshold)
+            write_rle_monochrome_data(f, frames, keyboard_width, keyboard_height, threshold, colors, dither)
         
         # Animation state - MUST be declared here, before functions
         f.write("""// Animation state
@@ -283,7 +357,7 @@ void video_animation_toggle(void) {
     print(f"Mode: {mode}, Compression: {stats['ratio']:.1f}x")
 
 
-def write_bitpacked_data(f, frames, width, height, threshold):
+def write_bitpacked_data(f, frames, width, height, threshold, colors=None, dither=False):
     """Write bit-packed monochrome data."""
     print("Converting to monochrome and bit-packing...")
     
@@ -294,7 +368,7 @@ def write_bitpacked_data(f, frames, width, height, threshold):
     f.write(f"static const uint8_t PROGMEM mono_frames[VIDEO_FRAME_COUNT][{bytes_per_frame}] = {{\n")
     
     for frame_idx, frame in enumerate(frames):
-        mono = convert_to_monochrome(frame, threshold)
+        mono = convert_to_monochrome(frame, threshold, colors, dither)
         packed = pack_bits(mono)
         
         f.write(f"    // Frame {frame_idx}\n    {{")
@@ -392,7 +466,7 @@ bool video_animation_update(uint8_t led_min, uint8_t led_max) {
 """)
 
 
-def write_rle_monochrome_data(f, frames, width, height, threshold):
+def write_rle_monochrome_data(f, frames, width, height, threshold, colors=None, dither=False):
     """Write RLE monochrome data."""
     print("Converting to monochrome and RLE compressing...")
     
@@ -401,7 +475,7 @@ def write_rle_monochrome_data(f, frames, width, height, threshold):
     total_runs = 0
     
     for i, frame in enumerate(frames):
-        mono = convert_to_monochrome(frame, threshold)
+        mono = convert_to_monochrome(frame, threshold, colors, dither)
         rle_data = rle_compress_monochrome(mono)
         compressed_frames.append(rle_data)
         total_runs += len(rle_data)
@@ -542,6 +616,8 @@ Examples:
                         help='Output C file')
     parser.add_argument('-f', '--fps', type=int, default=10, help='Target FPS')
     parser.add_argument('--skip', type=int, default=1, help='Frame skip')
+    parser.add_argument('--skip-pattern', type=str, default=None,
+                        help='Alternating skip pattern (e.g., "2,3" = skip 2, then 3, repeat)')
     parser.add_argument('--max-frames', type=int, default=None, help='Max frames to extract')
     parser.add_argument('--led-map', type=str, default=None, help='LED mapping file')
     parser.add_argument('--mode', choices=['bitpack', 'rle'], default='rle',
@@ -550,6 +626,10 @@ Examples:
                         help='B&W threshold 0-255 (default: 128)')
     parser.add_argument('--white', type=str, default='255,255,255',
                         help='White color as R,G,B (default: 255,255,255)')
+    parser.add_argument('--colors', type=int, default=None,
+                        help='Reduce to N colors before B&W conversion (2-16)')
+    parser.add_argument('--dither', action='store_true',
+                        help='Apply dithering for smoother B&W conversion')
     
     args = parser.parse_args()
     
@@ -588,11 +668,13 @@ Examples:
         args.width, 
         args.height,
         max_frames=args.max_frames,
-        frame_skip=args.skip
+        frame_skip=args.skip,
+        skip_pattern=args.skip_pattern
     )
     
     # Show compression preview
-    stats = calculate_compression_stats(frames, args.width, args.height, args.mode)
+    stats = calculate_compression_stats(frames, args.width, args.height, args.mode, 
+                                       args.threshold, args.colors, args.dither)
     print(f"\nCompression preview:")
     print(f"  Mode: {args.mode}")
     print(f"  Uncompressed: {stats['uncompressed']/1024:.1f} KB")
@@ -602,7 +684,8 @@ Examples:
     
     # Generate
     generate_qmk_code(frames, args.output, args.fps, args.width, args.height, 
-                     led_map, args.mode, args.threshold, white_color)
+                     led_map, args.mode, args.threshold, white_color,
+                     args.colors, args.dither)
     
     print("\n✓ Conversion complete!")
     print(f"\nWith {stats['ratio']:.1f}x compression, you could fit {int(stats['ratio'])} times")
