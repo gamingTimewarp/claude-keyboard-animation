@@ -22,6 +22,48 @@ python video_to_qmk.py badapple.mp4 -w 21 -y 6 --mode mono-rle --max-frames 1000
 
 ---
 
+## Prebuilt Binaries
+
+Standalone executables are available for Windows and Linux—no Python installation required.
+
+### Download
+
+Download the latest release from the [Releases page](https://github.com/awright/video-to-qmk/releases):
+
+- **Windows:** `video_to_qmk.exe`
+- **Linux:** `video_to_qmk`
+
+### Usage
+
+The binaries work exactly like the Python script:
+
+```bash
+# Windows
+video_to_qmk.exe badapple.mp4 -w 21 -y 6 -f 10 --max-frames 100
+
+# Linux
+./video_to_qmk badapple.mp4 -w 21 -y 6 -f 10 --max-frames 100
+```
+
+On Linux, you may need to make the binary executable first:
+```bash
+chmod +x video_to_qmk
+```
+
+### GUI Mode
+
+Running the executable without any arguments launches a graphical interface:
+
+```bash
+# Windows - double-click video_to_qmk.exe or run:
+video_to_qmk.exe
+
+# Linux
+./video_to_qmk
+```
+
+---
+
 ## Output Modes
 
 All modes are accessed via the `--mode` argument:
