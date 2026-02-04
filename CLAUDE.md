@@ -16,8 +16,10 @@ pip install opencv-python numpy
 
 Basic usage:
 ```bash
-python video_to_qmk.py <video> -w <width> -y <height> [-o output.c] [-f fps] [--skip N] [--max-frames N] [--led-map layout.txt]
+python video_to_qmk.py <video> -w <width> -y <height> [--mode MODE] [-o output.c] [-f fps] [--skip N] [--max-frames N] [--led-map layout.txt]
 ```
+
+Output modes (`--mode`): `rgb` (default), `rgb-rle`, `mono-bitpack`, `mono-rle`
 
 Example with included test video:
 ```bash
@@ -31,7 +33,7 @@ Single-script architecture (`video_to_qmk.py`) with four main components:
 1. **Video Info Extraction** (`get_video_info()`) - Reads video metadata via OpenCV
 2. **LED Mapping** (`load_led_map()`) - Parses custom LED layout files with gap support (255 markers)
 3. **Frame Processing** (`extract_and_resize_frames()`) - Extracts, resizes, and converts frames from BGR to RGB
-4. **QMK Code Generation** (`generate_qmk_code()`) - Outputs C code with PROGMEM frame data and animation state machine
+4. **QMK Code Generation** (`generate_qmk_code()`) - Outputs C code with PROGMEM frame data and animation state machine; supports uncompressed RGB, color RLE, monochrome bit-packed, and monochrome RLE output modes
 
 ## LED Mapping Format
 
