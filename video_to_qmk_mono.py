@@ -342,37 +342,30 @@ static void display_bitpacked_frame(uint16_t frame_idx, uint8_t led_min, uint8_t
     
     if led_map:
         f.write("""            uint8_t led_index = pgm_read_byte(&led_map[y][x]);
-            if (led_index == 255) {
-                pixel_idx++;
-                continue;
-            }
-            if (led_index < led_min || led_index >= led_max) {
-                pixel_idx++;
-                continue;
+            if (led_index != 255 && led_index >= led_min && led_index < led_max) {
+                if (is_white) {
+                    rgb_matrix_set_color(led_index, WHITE_R, WHITE_G, WHITE_B);
+                } else {
+                    rgb_matrix_set_color(led_index, 0, 0, 0);
+                }
             }
             
-            if (is_white) {
-                rgb_matrix_set_color(led_index, WHITE_R, WHITE_G, WHITE_B);
-            } else {
-                rgb_matrix_set_color(led_index, 0, 0, 0);
-            }
+            pixel_idx++;
 """)
     else:
         f.write("""            uint8_t led_index = y * VIDEO_WIDTH + x;
-            if (led_index < led_min || led_index >= led_max) {
-                pixel_idx++;
-                continue;
+            if (led_index >= led_min && led_index < led_max) {
+                if (is_white) {
+                    rgb_matrix_set_color(led_index, WHITE_R, WHITE_G, WHITE_B);
+                } else {
+                    rgb_matrix_set_color(led_index, 0, 0, 0);
+                }
             }
             
-            if (is_white) {
-                rgb_matrix_set_color(led_index, WHITE_R, WHITE_G, WHITE_B);
-            } else {
-                rgb_matrix_set_color(led_index, 0, 0, 0);
-            }
+            pixel_idx++;
 """)
     
-    f.write("""            pixel_idx++;
-        }
+    f.write("""        }
     }
 }
 
@@ -457,7 +450,7 @@ static void decode_and_display_mono_rle(uint16_t frame_idx, uint8_t led_min, uin
     uint32_t start_offset = pgm_read_dword(&frame_offsets[frame_idx]);
     uint32_t end_offset = pgm_read_dword(&frame_offsets[frame_idx + 1]);
     
-    uint16_t pixel_idx = 0;
+    uint32_t pixel_idx = 0;
     
     for (uint32_t offset = start_offset; offset < end_offset; offset++) {
         uint8_t count = pgm_read_byte(&rle_data[offset * 2]);
@@ -466,30 +459,32 @@ static void decode_and_display_mono_rle(uint16_t frame_idx, uint8_t led_min, uin
         for (uint8_t i = 0; i < count; i++) {
             uint8_t y = pixel_idx / VIDEO_WIDTH;
             uint8_t x = pixel_idx % VIDEO_WIDTH;
-            pixel_idx++;
             
 """)
     
     if led_map:
         f.write("""            uint8_t led_index = pgm_read_byte(&led_map[y][x]);
-            if (led_index == 255) continue;
-            if (led_index < led_min || led_index >= led_max) continue;
-            
-            if (is_white) {
-                rgb_matrix_set_color(led_index, WHITE_R, WHITE_G, WHITE_B);
-            } else {
-                rgb_matrix_set_color(led_index, 0, 0, 0);
+            if (led_index != 255 && led_index >= led_min && led_index < led_max) {
+                if (is_white) {
+                    rgb_matrix_set_color(led_index, WHITE_R, WHITE_G, WHITE_B);
+                } else {
+                    rgb_matrix_set_color(led_index, 0, 0, 0);
+                }
             }
+            
+            pixel_idx++;
 """)
     else:
         f.write("""            uint8_t led_index = y * VIDEO_WIDTH + x;
-            if (led_index < led_min || led_index >= led_max) continue;
-            
-            if (is_white) {
-                rgb_matrix_set_color(led_index, WHITE_R, WHITE_G, WHITE_B);
-            } else {
-                rgb_matrix_set_color(led_index, 0, 0, 0);
+            if (led_index >= led_min && led_index < led_max) {
+                if (is_white) {
+                    rgb_matrix_set_color(led_index, WHITE_R, WHITE_G, WHITE_B);
+                } else {
+                    rgb_matrix_set_color(led_index, 0, 0, 0);
+                }
             }
+            
+            pixel_idx++;
 """)
     
     f.write("""        }
