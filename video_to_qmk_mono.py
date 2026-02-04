@@ -286,6 +286,7 @@ def generate_qmk_code(frames, output_path, fps, keyboard_width, keyboard_height,
         f.write(f"#define VIDEO_HEIGHT {keyboard_height}\n")
         f.write(f"#define VIDEO_FPS {fps}\n")
         f.write(f"#define FRAME_DELAY_MS {int(1000/fps)}\n")
+        f.write(f"#define TOTAL_PIXELS {keyboard_width * keyboard_height}\n")
         f.write(f"#define WHITE_R {white_color[0]}\n")
         f.write(f"#define WHITE_G {white_color[1]}\n")
         f.write(f"#define WHITE_B {white_color[2]}\n\n")
