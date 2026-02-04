@@ -10,6 +10,7 @@ Supports multiple output modes:
   mono-rle     - Monochrome with RLE (50-100x compression)
 """
 
+import sys
 import cv2
 import numpy as np
 import argparse
@@ -1012,7 +1013,17 @@ Examples:
                             help='Convert to B&W before resizing (best for pure B&W source videos)')
 
     args = parser.parse_args()
+    run_conversion(args)
 
+
+def run_conversion(args, interactive=True):
+    """
+    Run the video-to-QMK conversion.
+
+    Args:
+        args: Namespace with conversion parameters (from argparse or GUI).
+        interactive: If True, prompt the user on large uncompressed output.
+    """
     # Validate input
     if not Path(args.video).exists():
         print(f"Error: Video file '{args.video}' not found")
@@ -1077,7 +1088,7 @@ Examples:
             estimated_compressed = estimated_size_kb / 2.5
         print(f"  Estimated compressed size: ~{estimated_compressed:.1f} KB (rough estimate)")
 
-    if estimated_size_kb > 1000 and args.mode == 'rgb':
+    if estimated_size_kb > 1000 and args.mode == 'rgb' and interactive:
         print("\nWARNING: Output file will be very large!")
         print("    Consider using --mode rgb-rle or --mode mono-rle to reduce size")
         response = input("Continue? (y/n): ")
@@ -1123,5 +1134,324 @@ Examples:
     print(f"5. Compile and flash!")
 
 
+def launch_gui():
+    """Launch the tkinter GUI for video-to-QMK conversion."""
+    import tkinter as tk
+    from tkinter import ttk, filedialog, scrolledtext
+    import threading
+    import queue
+    import io
+
+    root = tk.Tk()
+    root.title("Video to QMK RGB Animation Converter")
+    root.resizable(True, True)
+
+    # --- stdout redirect via queue ---
+    log_queue = queue.Queue()
+
+    class QueueWriter(io.TextIOBase):
+        """Redirect writes to a thread-safe queue."""
+        def write(self, text):
+            if text:
+                log_queue.put(text)
+            return len(text) if text else 0
+
+        def flush(self):
+            pass
+
+    def poll_log():
+        """Drain the queue into the log widget."""
+        while True:
+            try:
+                msg = log_queue.get_nowait()
+            except queue.Empty:
+                break
+            log_text.configure(state='normal')
+            log_text.insert(tk.END, msg)
+            log_text.see(tk.END)
+            log_text.configure(state='disabled')
+        root.after(100, poll_log)
+
+    # --- Variables ---
+    video_var = tk.StringVar()
+    output_var = tk.StringVar(value='video_animation.c')
+    width_var = tk.IntVar(value=15)
+    height_var = tk.IntVar(value=5)
+    fps_var = tk.IntVar(value=10)
+    mode_var = tk.StringVar(value='rgb')
+    skip_var = tk.IntVar(value=1)
+    skip_pattern_var = tk.StringVar()
+    max_frames_var = tk.StringVar()
+    interp_var = tk.StringVar(value='area')
+    led_map_var = tk.StringVar()
+    threshold_var = tk.IntVar(value=128)
+    adaptive_var = tk.BooleanVar()
+    auto_thresh_var = tk.BooleanVar()
+    dither_var = tk.BooleanVar()
+    bw_first_var = tk.BooleanVar()
+    white_var = tk.StringVar(value='255,255,255')
+    colors_var = tk.StringVar()
+
+    # --- Helpers ---
+    mono_widgets = []
+
+    def browse_video():
+        path = filedialog.askopenfilename(
+            title="Select Video File",
+            filetypes=[("Video files", "*.mp4 *.avi *.mkv *.mov *.webm"), ("All files", "*.*")]
+        )
+        if path:
+            video_var.set(path)
+
+    def browse_output():
+        path = filedialog.asksaveasfilename(
+            title="Save Output As",
+            defaultextension=".c",
+            filetypes=[("C source files", "*.c"), ("All files", "*.*")]
+        )
+        if path:
+            output_var.set(path)
+
+    def browse_led_map():
+        path = filedialog.askopenfilename(
+            title="Select LED Map File",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+        if path:
+            led_map_var.set(path)
+
+    def on_mode_change(*_args):
+        is_mono = mode_var.get().startswith('mono')
+        state = 'normal' if is_mono else 'disabled'
+        for w in mono_widgets:
+            try:
+                w.configure(state=state)
+            except tk.TclError:
+                pass
+
+    def do_convert():
+        """Gather form values and run conversion in a background thread."""
+        video = video_var.get().strip()
+        if not video:
+            log_queue.put("Error: No video file selected.\n")
+            return
+
+        w = width_var.get()
+        h = height_var.get()
+        if w <= 0 or h <= 0:
+            log_queue.put("Error: Width and height must be positive.\n")
+            return
+
+        # Build an argparse-like namespace
+        args = argparse.Namespace(
+            video=video,
+            output=output_var.get().strip() or 'video_animation.c',
+            width=w,
+            height=h,
+            fps=fps_var.get(),
+            mode=mode_var.get(),
+            skip=skip_var.get(),
+            skip_pattern=skip_pattern_var.get().strip() or None,
+            max_frames=None,
+            interp=interp_var.get(),
+            led_map=led_map_var.get().strip() or None,
+            threshold=threshold_var.get(),
+            adaptive_threshold=adaptive_var.get(),
+            auto_threshold=auto_thresh_var.get(),
+            dither=dither_var.get(),
+            bw_first=bw_first_var.get(),
+            white=white_var.get().strip(),
+            colors=None,
+        )
+
+        # Parse optional integers
+        mf = max_frames_var.get().strip()
+        if mf:
+            try:
+                args.max_frames = int(mf)
+            except ValueError:
+                log_queue.put("Error: Max Frames must be a number.\n")
+                return
+
+        cv = colors_var.get().strip()
+        if cv:
+            try:
+                args.colors = int(cv)
+            except ValueError:
+                log_queue.put("Error: Colors must be a number.\n")
+                return
+
+        convert_btn.configure(state='disabled')
+
+        # Clear log
+        log_text.configure(state='normal')
+        log_text.delete('1.0', tk.END)
+        log_text.configure(state='disabled')
+
+        def worker():
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            sys.stdout = QueueWriter()
+            sys.stderr = QueueWriter()
+            try:
+                run_conversion(args, interactive=False)
+            except Exception as e:
+                print(f"\nError during conversion: {e}")
+            finally:
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                # Re-enable button from main thread
+                root.after(0, lambda: convert_btn.configure(state='normal'))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ====================== Build UI ======================
+    frame = ttk.Frame(root, padding=10)
+    frame.grid(sticky='nsew')
+    root.columnconfigure(0, weight=1)
+    root.rowconfigure(0, weight=1)
+    frame.columnconfigure(1, weight=1)
+
+    row = 0
+
+    # --- Video Input ---
+    ttk.Label(frame, text="Video File:").grid(row=row, column=0, sticky='w', pady=2)
+    entry_video = ttk.Entry(frame, textvariable=video_var)
+    entry_video.grid(row=row, column=1, sticky='ew', padx=(5, 0), pady=2)
+    ttk.Button(frame, text="Browse...", command=browse_video).grid(row=row, column=2, padx=(5, 0), pady=2)
+    row += 1
+
+    # --- Output File ---
+    ttk.Label(frame, text="Output File:").grid(row=row, column=0, sticky='w', pady=2)
+    ttk.Entry(frame, textvariable=output_var).grid(row=row, column=1, sticky='ew', padx=(5, 0), pady=2)
+    ttk.Button(frame, text="Browse...", command=browse_output).grid(row=row, column=2, padx=(5, 0), pady=2)
+    row += 1
+
+    # --- Dimensions ---
+    dim_frame = ttk.Frame(frame)
+    dim_frame.grid(row=row, column=0, columnspan=3, sticky='w', pady=2)
+    ttk.Label(dim_frame, text="Width:").pack(side='left')
+    ttk.Spinbox(dim_frame, textvariable=width_var, from_=1, to=200, width=5).pack(side='left', padx=(5, 15))
+    ttk.Label(dim_frame, text="Height:").pack(side='left')
+    ttk.Spinbox(dim_frame, textvariable=height_var, from_=1, to=200, width=5).pack(side='left', padx=(5, 0))
+    row += 1
+
+    # --- FPS ---
+    fps_frame = ttk.Frame(frame)
+    fps_frame.grid(row=row, column=0, columnspan=3, sticky='w', pady=2)
+    ttk.Label(fps_frame, text="FPS:").pack(side='left')
+    ttk.Spinbox(fps_frame, textvariable=fps_var, from_=1, to=60, width=5).pack(side='left', padx=(5, 0))
+    row += 1
+
+    # --- Mode ---
+    mode_frame = ttk.Frame(frame)
+    mode_frame.grid(row=row, column=0, columnspan=3, sticky='w', pady=2)
+    ttk.Label(mode_frame, text="Mode:").pack(side='left')
+    mode_combo = ttk.Combobox(mode_frame, textvariable=mode_var,
+                              values=['rgb', 'rgb-rle', 'mono-bitpack', 'mono-rle'],
+                              state='readonly', width=15)
+    mode_combo.pack(side='left', padx=(5, 0))
+    mode_var.trace_add('write', on_mode_change)
+    row += 1
+
+    # --- Frame Options ---
+    fopt_frame = ttk.Frame(frame)
+    fopt_frame.grid(row=row, column=0, columnspan=3, sticky='w', pady=2)
+    ttk.Label(fopt_frame, text="Skip:").pack(side='left')
+    ttk.Spinbox(fopt_frame, textvariable=skip_var, from_=1, to=100, width=5).pack(side='left', padx=(5, 15))
+    ttk.Label(fopt_frame, text="Skip Pattern:").pack(side='left')
+    ttk.Entry(fopt_frame, textvariable=skip_pattern_var, width=10).pack(side='left', padx=(5, 15))
+    ttk.Label(fopt_frame, text="Max Frames:").pack(side='left')
+    ttk.Entry(fopt_frame, textvariable=max_frames_var, width=8).pack(side='left', padx=(5, 0))
+    row += 1
+
+    # --- Interpolation ---
+    interp_frame = ttk.Frame(frame)
+    interp_frame.grid(row=row, column=0, columnspan=3, sticky='w', pady=2)
+    ttk.Label(interp_frame, text="Interpolation:").pack(side='left')
+    ttk.Combobox(interp_frame, textvariable=interp_var,
+                 values=['area', 'nearest', 'linear', 'cubic'],
+                 state='readonly', width=10).pack(side='left', padx=(5, 0))
+    row += 1
+
+    # --- LED Map ---
+    ttk.Label(frame, text="LED Map:").grid(row=row, column=0, sticky='w', pady=2)
+    ttk.Entry(frame, textvariable=led_map_var).grid(row=row, column=1, sticky='ew', padx=(5, 0), pady=2)
+    ttk.Button(frame, text="Browse...", command=browse_led_map).grid(row=row, column=2, padx=(5, 0), pady=2)
+    row += 1
+
+    # --- Monochrome Options (separator) ---
+    ttk.Separator(frame, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=6)
+    row += 1
+
+    mono_label = ttk.Label(frame, text="Monochrome Options")
+    mono_label.grid(row=row, column=0, columnspan=3, sticky='w', pady=(0, 2))
+    row += 1
+
+    # Threshold
+    mono_row1 = ttk.Frame(frame)
+    mono_row1.grid(row=row, column=0, columnspan=3, sticky='w', pady=2)
+    lbl_thresh = ttk.Label(mono_row1, text="Threshold:")
+    lbl_thresh.pack(side='left')
+    sp_thresh = ttk.Spinbox(mono_row1, textvariable=threshold_var, from_=0, to=255, width=5)
+    sp_thresh.pack(side='left', padx=(5, 15))
+    mono_widgets.extend([lbl_thresh, sp_thresh])
+
+    lbl_colors = ttk.Label(mono_row1, text="Colors:")
+    lbl_colors.pack(side='left')
+    ent_colors = ttk.Entry(mono_row1, textvariable=colors_var, width=5)
+    ent_colors.pack(side='left', padx=(5, 0))
+    mono_widgets.extend([lbl_colors, ent_colors])
+    row += 1
+
+    # Checkboxes
+    mono_row2 = ttk.Frame(frame)
+    mono_row2.grid(row=row, column=0, columnspan=3, sticky='w', pady=2)
+    cb_adaptive = ttk.Checkbutton(mono_row2, text="Adaptive Threshold", variable=adaptive_var)
+    cb_adaptive.pack(side='left', padx=(0, 10))
+    cb_auto = ttk.Checkbutton(mono_row2, text="Auto Threshold", variable=auto_thresh_var)
+    cb_auto.pack(side='left', padx=(0, 10))
+    cb_dither = ttk.Checkbutton(mono_row2, text="Dither", variable=dither_var)
+    cb_dither.pack(side='left', padx=(0, 10))
+    cb_bw = ttk.Checkbutton(mono_row2, text="BW First", variable=bw_first_var)
+    cb_bw.pack(side='left')
+    mono_widgets.extend([cb_adaptive, cb_auto, cb_dither, cb_bw])
+    row += 1
+
+    # White color
+    mono_row3 = ttk.Frame(frame)
+    mono_row3.grid(row=row, column=0, columnspan=3, sticky='w', pady=2)
+    lbl_white = ttk.Label(mono_row3, text="White (R,G,B):")
+    lbl_white.pack(side='left')
+    ent_white = ttk.Entry(mono_row3, textvariable=white_var, width=12)
+    ent_white.pack(side='left', padx=(5, 0))
+    mono_widgets.extend([lbl_white, ent_white])
+    row += 1
+
+    # Grey out mono options initially
+    on_mode_change()
+
+    # --- Convert Button ---
+    ttk.Separator(frame, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=6)
+    row += 1
+
+    convert_btn = ttk.Button(frame, text="Convert", command=do_convert)
+    convert_btn.grid(row=row, column=0, columnspan=3, pady=4)
+    row += 1
+
+    # --- Log Output ---
+    log_text = scrolledtext.ScrolledText(frame, height=14, state='disabled', wrap='word')
+    log_text.grid(row=row, column=0, columnspan=3, sticky='nsew', pady=(4, 0))
+    frame.rowconfigure(row, weight=1)
+
+    # Start polling the log queue
+    poll_log()
+
+    root.mainloop()
+
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1:
+        main()
+    else:
+        launch_gui()
