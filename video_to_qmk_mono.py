@@ -419,8 +419,8 @@ def write_rle_monochrome_data(f, frames, width, height, threshold):
     print()
     
     # Frame offsets
-    f.write("// Frame offsets in RLE data\n")
-    f.write(f"static const uint16_t PROGMEM frame_offsets[VIDEO_FRAME_COUNT + 1] = {{\n    ")
+    f.write("// Frame offsets in RLE data (uint32_t for large animations)\n")
+    f.write(f"static const uint32_t PROGMEM frame_offsets[VIDEO_FRAME_COUNT + 1] = {{\n    ")
     for i, offset in enumerate(frame_offsets):
         f.write(f"{offset}")
         if i < len(frame_offsets) - 1:
@@ -454,12 +454,12 @@ def write_rle_monochrome_functions(f, led_map):
     """Write RLE monochrome decompression functions."""
     f.write("""// Decode and display RLE monochrome frame
 static void decode_and_display_mono_rle(uint16_t frame_idx, uint8_t led_min, uint8_t led_max) {
-    uint16_t start_offset = pgm_read_word(&frame_offsets[frame_idx]);
-    uint16_t end_offset = pgm_read_word(&frame_offsets[frame_idx + 1]);
+    uint32_t start_offset = pgm_read_dword(&frame_offsets[frame_idx]);
+    uint32_t end_offset = pgm_read_dword(&frame_offsets[frame_idx + 1]);
     
     uint16_t pixel_idx = 0;
     
-    for (uint16_t offset = start_offset; offset < end_offset; offset++) {
+    for (uint32_t offset = start_offset; offset < end_offset; offset++) {
         uint8_t count = pgm_read_byte(&rle_data[offset * 2]);
         bool is_white = pgm_read_byte(&rle_data[offset * 2 + 1]);
         
