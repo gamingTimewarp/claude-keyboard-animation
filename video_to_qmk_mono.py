@@ -235,18 +235,25 @@ def generate_qmk_code(frames, output_path, fps, keyboard_width, keyboard_height,
         # Generate frame data based on mode
         if mode == 'bitpack':
             write_bitpacked_data(f, frames, keyboard_width, keyboard_height, threshold)
-            write_bitpack_functions(f, led_map)
         elif mode == 'rle':
             write_rle_monochrome_data(f, frames, keyboard_width, keyboard_height, threshold)
-            write_rle_monochrome_functions(f, led_map)
         
-        # Animation state
+        # Animation state - MUST be declared here, before functions
         f.write("""// Animation state
 static uint16_t current_frame = 0;
 static uint32_t last_frame_time = 0;
 static bool animation_playing = false;
 
-// Start the animation
+""")
+        
+        # Now write the functions
+        if mode == 'bitpack':
+            write_bitpack_functions(f, led_map)
+        elif mode == 'rle':
+            write_rle_monochrome_functions(f, led_map)
+        
+        # Common control functions
+        f.write("""// Start the animation
 void video_animation_start(void) {
     current_frame = 0;
     last_frame_time = timer_read32();
