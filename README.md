@@ -30,6 +30,18 @@ python video_to_qmk.py --help
 
 ## Quick Start
 
+**Easiest: launch the GUI** by running with no arguments:
+
+```bash
+./video_to_qmk
+# or
+python video_to_qmk.py
+```
+
+All options are available through the interface — pick your video, set dimensions, choose a mode, and hit Convert.
+
+**Or use the CLI directly:**
+
 ```bash
 # Using prebuilt binary (or replace with "python video_to_qmk.py" for source)
 ./video_to_qmk badapple.mp4 -w 21 -y 6 -f 10 --max-frames 100
@@ -39,10 +51,30 @@ python video_to_qmk.py --help
 
 # Black & white with extreme compression (50-100x smaller!)
 ./video_to_qmk badapple.mp4 -w 21 -y 6 --mode mono-rle --max-frames 1000
+```
 
-# GUI mode - run without arguments
+---
+
+## GUI Mode
+
+Run with no arguments to launch the graphical interface:
+
+```bash
+python video_to_qmk.py
+# or
 ./video_to_qmk
 ```
+
+The GUI provides access to all conversion options:
+
+- **Video/output file** selection with file browser dialogs
+- **Dimensions, FPS, mode** — same options as the CLI
+- **Frame options** — skip, skip pattern, max frames, interpolation method
+- **LED map** file selection
+- **Monochrome options** — threshold, adaptive/auto threshold, dither, BW first, white color, color reduction (automatically disabled when using an RGB mode)
+- **Keymap Integration** — check "Generate keymap files" and select your QMK keymap directory to automatically produce the `.h` header and `rules.mk` alongside the conversion
+
+Conversion runs in a background thread with live log output in the window.
 
 ---
 
@@ -92,6 +124,7 @@ Optional:
   --skip-pattern X,Y   Alternating skip pattern (e.g., "2,3" = skip 2, then 3, repeat)
   --interp METHOD      Resize interpolation: nearest, area, linear, cubic (default: area)
   --led-map FILE       Custom LED mapping file (for non-rectangular layouts)
+  --setup-keymap DIR   Generate .h and rules.mk in the given keymap directory
 
 Monochrome options (for mono-bitpack and mono-rle modes):
   --threshold N        B&W threshold 0-255 (default: 128)
@@ -257,24 +290,26 @@ python video_to_qmk.py video.mp4 -w 21 -y 6 --mode mono-rle \
 
 ## Integration with QMK
 
-### Step 1: Generate Animation
+### Step 1: Generate Animation + Keymap Files
+
+Use `--setup-keymap` to generate everything in one command:
+
 ```bash
 python video_to_qmk.py badapple.mp4 -w 21 -y 6 -f 12 \
-  --max-frames 500 --mode mono-rle --led-map your_layout.txt -o video_animation.c
+  --max-frames 500 --mode mono-rle --led-map your_layout.txt \
+  --setup-keymap /path/to/qmk_firmware/keyboards/your_kb/keymaps/your_keymap
 ```
 
-### Step 2: Create Header File
-Create `video_animation.h` in your keymap directory:
-```c
-#pragma once
+This generates the animation `.c` file and automatically:
+- Copies it into your keymap directory
+- Creates the matching `.h` header file
+- Creates or updates `rules.mk` with the `SRC +=` line
 
-void video_animation_start(void);
-void video_animation_stop(void);
-void video_animation_toggle(void);
-bool video_animation_update(uint8_t led_min, uint8_t led_max);
-```
+The same option is available as a checkbox in the GUI.
 
-### Step 3: Update `keymap.c`
+> **Manual alternative:** If you prefer to set up files yourself, create `video_animation.h` in your keymap directory with the function declarations (`video_animation_start`, `video_animation_stop`, `video_animation_toggle`, `video_animation_update`) and add `SRC += video_animation.c` to your `rules.mk`.
+
+### Step 2: Update `keymap.c`
 ```c
 #include "video_animation.h"
 
@@ -304,19 +339,10 @@ bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
 }
 ```
 
-### Step 4: Update `rules.mk`
-```makefile
-SRC += video_animation.c
-
-# Optional: Save space
-CONSOLE_ENABLE = no
-COMMAND_ENABLE = no
-```
-
-### Step 5: Map Toggle Key
+### Step 3: Map Toggle Key
 Add `VIDEO_TOGGLE` to a key in your keymap layout to control playback.
 
-### Step 6: Compile & Flash
+### Step 4: Compile & Flash
 ```bash
 qmk compile -kb your_keyboard -km your_keymap
 qmk flash -kb your_keyboard -km your_keymap

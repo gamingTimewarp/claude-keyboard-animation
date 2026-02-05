@@ -942,6 +942,104 @@ void video_animation_toggle(void) {
         print(f"Mode: {mode}, Compression: {stats['ratio']:.1f}x")
 
 
+# ====================== Keymap Setup ======================
+
+HEADER_TEMPLATE = """\
+#pragma once
+
+#include QMK_KEYBOARD_H
+
+void video_animation_start(void);
+void video_animation_stop(void);
+void video_animation_toggle(void);
+bool video_animation_update(uint8_t led_min, uint8_t led_max);
+"""
+
+
+def find_animation_file(keymap_dir):
+    """Auto-detect the animation .c file by scanning for video_animation_update."""
+    candidates = []
+    for f in keymap_dir.iterdir():
+        if f.suffix == '.c' and f.name != 'keymap.c':
+            try:
+                text = f.read_text(errors='ignore')
+                if 'video_animation_update' in text:
+                    candidates.append(f)
+            except OSError:
+                continue
+
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        names = ', '.join(c.name for c in candidates)
+        print(f"Multiple animation files found: {names}")
+        return None
+
+    default = keymap_dir / 'video_animation.c'
+    if default.exists():
+        return default
+
+    return None
+
+
+def generate_header(keymap_dir, stem):
+    """Write the .h header file."""
+    header_path = keymap_dir / f'{stem}.h'
+    header_path.write_text(HEADER_TEMPLATE)
+    return header_path
+
+
+def update_rules_mk(keymap_dir, c_filename):
+    """Create or update rules.mk with the SRC line."""
+    rules_path = keymap_dir / 'rules.mk'
+    src_line = f'SRC += {c_filename}'
+
+    if rules_path.exists():
+        content = rules_path.read_text()
+        if src_line in content:
+            return rules_path, False
+        if content and not content.endswith('\n'):
+            content += '\n'
+        content += src_line + '\n'
+        rules_path.write_text(content)
+    else:
+        rules_path.write_text(src_line + '\n')
+
+    return rules_path, True
+
+
+def setup_keymap(keymap_dir, c_file_path):
+    """Generate .h and rules.mk for the given animation .c file in keymap_dir.
+
+    If c_file_path is not inside keymap_dir, it is copied there first.
+    """
+    import shutil
+
+    keymap_dir = Path(keymap_dir).resolve()
+    c_file_path = Path(c_file_path).resolve()
+
+    if not keymap_dir.is_dir():
+        print(f"Error: {keymap_dir} is not a directory")
+        return
+
+    # Copy .c file into keymap dir if it isn't already there
+    dest = keymap_dir / c_file_path.name
+    if dest.resolve() != c_file_path:
+        shutil.copy2(c_file_path, dest)
+        print(f"Copied {c_file_path.name} -> {keymap_dir}")
+
+    stem = c_file_path.stem
+
+    header_path = generate_header(keymap_dir, stem)
+    print(f"Created {header_path}")
+
+    rules_path, rules_changed = update_rules_mk(keymap_dir, c_file_path.name)
+    if rules_changed:
+        print(f"Updated {rules_path}")
+    else:
+        print(f"{rules_path} already includes {c_file_path.name}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Convert video to QMK RGB matrix animation",
@@ -1012,8 +1110,16 @@ Examples:
     mono_group.add_argument('--bw-first', action='store_true',
                             help='Convert to B&W before resizing (best for pure B&W source videos)')
 
+    # Keymap integration
+    parser.add_argument('--setup-keymap', type=str, default=None, metavar='DIR',
+                        help='Also generate .h and rules.mk in the given keymap directory')
+
     args = parser.parse_args()
     run_conversion(args)
+
+    if args.setup_keymap and Path(args.output).exists():
+        print()
+        setup_keymap(args.setup_keymap, args.output)
 
 
 def run_conversion(args, interactive=True):
@@ -1191,9 +1297,12 @@ def launch_gui():
     bw_first_var = tk.BooleanVar()
     white_var = tk.StringVar(value='255,255,255')
     colors_var = tk.StringVar()
+    setup_keymap_var = tk.BooleanVar()
+    keymap_dir_var = tk.StringVar()
 
     # --- Helpers ---
     mono_widgets = []
+    keymap_widgets = []
 
     def browse_video():
         path = filedialog.askopenfilename(
@@ -1220,10 +1329,23 @@ def launch_gui():
         if path:
             led_map_var.set(path)
 
+    def browse_keymap_dir():
+        path = filedialog.askdirectory(title="Select QMK Keymap Directory")
+        if path:
+            keymap_dir_var.set(path)
+
     def on_mode_change(*_args):
         is_mono = mode_var.get().startswith('mono')
         state = 'normal' if is_mono else 'disabled'
         for w in mono_widgets:
+            try:
+                w.configure(state=state)
+            except tk.TclError:
+                pass
+
+    def on_setup_keymap_change(*_args):
+        state = 'normal' if setup_keymap_var.get() else 'disabled'
+        for w in keymap_widgets:
             try:
                 w.configure(state=state)
             except tk.TclError:
@@ -1281,6 +1403,14 @@ def launch_gui():
                 log_queue.put("Error: Colors must be a number.\n")
                 return
 
+        # Capture keymap setup options from main thread
+        do_setup = setup_keymap_var.get()
+        keymap_dir = keymap_dir_var.get().strip()
+
+        if do_setup and not keymap_dir:
+            log_queue.put("Error: Keymap directory not set.\n")
+            return
+
         convert_btn.configure(state='disabled')
 
         # Clear log
@@ -1295,6 +1425,9 @@ def launch_gui():
             sys.stderr = QueueWriter()
             try:
                 run_conversion(args, interactive=False)
+                if do_setup and Path(args.output).exists():
+                    print()
+                    setup_keymap(keymap_dir, args.output)
             except Exception as e:
                 print(f"\nError during conversion: {e}")
             finally:
@@ -1430,6 +1563,30 @@ def launch_gui():
 
     # Grey out mono options initially
     on_mode_change()
+
+    # --- Keymap Integration ---
+    ttk.Separator(frame, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=6)
+    row += 1
+
+    ttk.Label(frame, text="Keymap Integration").grid(row=row, column=0, columnspan=3, sticky='w', pady=(0, 2))
+    row += 1
+
+    cb_setup = ttk.Checkbutton(frame, text="Generate keymap files (.h + rules.mk)",
+                                variable=setup_keymap_var, command=on_setup_keymap_change)
+    cb_setup.grid(row=row, column=0, columnspan=3, sticky='w', pady=2)
+    row += 1
+
+    lbl_keymap = ttk.Label(frame, text="Keymap Dir:")
+    lbl_keymap.grid(row=row, column=0, sticky='w', pady=2)
+    ent_keymap = ttk.Entry(frame, textvariable=keymap_dir_var)
+    ent_keymap.grid(row=row, column=1, sticky='ew', padx=(5, 0), pady=2)
+    btn_keymap = ttk.Button(frame, text="Browse...", command=browse_keymap_dir)
+    btn_keymap.grid(row=row, column=2, padx=(5, 0), pady=2)
+    keymap_widgets.extend([lbl_keymap, ent_keymap, btn_keymap])
+    row += 1
+
+    # Grey out keymap dir initially
+    on_setup_keymap_change()
 
     # --- Convert Button ---
     ttk.Separator(frame, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=6)
